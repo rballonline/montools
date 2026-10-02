@@ -22,13 +22,15 @@ Monitors without a known KVM layout are hidden by default. Show them with **Show
 
 ## Install & run
 
-There are no prebuilt releases yet, so build from source (see [Development](#development)). `pnpm tauri build` produces installers in `src-tauri/target/release/bundle/`:
+Download the latest build from [Releases](https://github.com/rballonline/montools/releases/latest):
 
-- **Windows**: NSIS installer (`nsis/montools_*_x64-setup.exe`)
-- **Linux**: `.deb`, `.rpm` and AppImage
-- **macOS**: `.dmg` / `.app`
+- **Windows**: `montools_*_windows-x64_portable.zip`: unzip anywhere and run `montools.exe`, no install needed. There's also a `-setup.exe` installer if you prefer. The builds aren't code-signed, so SmartScreen may warn the first time (*More info → Run anyway*). Uses WebView2, which ships with Windows 10 and 11.
+- **Linux**: the `.AppImage` (`chmod +x` and run), or the `.deb` / `.rpm`. The `linux-x64_portable.tar.gz` contains the bare binaries, including the CLI.
+- **macOS** (Apple Silicon, untested): the `.dmg`. The app isn't signed, so right-click → **Open** the first time.
 
-The CLI is built alongside the app at `src-tauri/target/release/montools-cli(.exe)`.
+`montools-cli` is in the portable archives next to the app.
+
+If you move the app after turning on **Start at login**, toggle that setting off and on again so it points to the new location.
 
 ### Platform setup
 
@@ -97,7 +99,7 @@ montools-cli [--monitor <key>] <command>
 
   ```sh
   sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
-    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+    libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libudev-dev
   ```
 
 ### Commands
@@ -153,3 +155,14 @@ Add it to `PROFILES`, add a decode/encode test with values read from your monito
 ### Contributing
 
 Issues and PRs are welcome, especially new monitor profiles and Linux/macOS testing reports. Before submitting, please run `cargo test`, `cargo clippy` and `pnpm build`.
+
+### Releasing
+
+Bump the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, commit, then tag and push:
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The [Release workflow](.github/workflows/release.yml) builds Windows, Linux and macOS in parallel. It attaches the installers and portable archives to a draft release, then publishes it once every platform has succeeded.

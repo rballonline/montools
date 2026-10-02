@@ -2,7 +2,9 @@
 name = "montools"
 version = "0.1.1"
 description = "Monitor input + KVM switching over DDC/CI"
-authors = ["you"]
+authors = ["William Tilton"]
+license = "MIT"
+repository = "https://github.com/rballonline/montools"
 edition = "2021"
 default-run = "montools"
 

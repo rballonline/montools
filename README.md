@@ -166,3 +166,7 @@ git push origin v0.2.0
 ```
 
 The [Release workflow](.github/workflows/release.yml) builds Windows, Linux and macOS in parallel. It attaches the installers and portable archives to a draft release, then publishes it once every platform has succeeded.
+
+## License
+
+[MIT](LICENSE)

@@ -22,6 +22,8 @@ COMMANDS:
   config                       Show config path and contents
   config set this|other <input>
   config name this|other <name>  Friendly name for a computer (empty clears it)
+  hotkey-daemon [--hotkey <keys>]  (Linux) Toggle on a hotkey read from /dev/input;
+                                 works at the login screen. See README.
 ";
 
 fn main() {
@@ -37,6 +39,18 @@ fn print_kvm(cfg: &Config, k: &KvmState) {
         let who = cfg.computer_name(s.input).map(|n| format!("  [{n}]")).unwrap_or_default();
         println!("    {:<6} → {:<7}{who}", s.input_name, s.port_name);
     }
+}
+
+/// Opens and resolves the selected monitor, via the saved I2C bus when possible, and
+/// remembers the bus it was found on for next time.
+fn open_monitor(cfg: &mut Config, monitor: Option<&str>) -> Result<(Monitors, String)> {
+    let m = Monitors::open(monitor, cfg.i2c_bus);
+    let key = m.resolve(monitor)?;
+    if let Some(bus) = m.bus(&key).filter(|&b| Some(b) != cfg.i2c_bus) {
+        cfg.i2c_bus = Some(bus);
+        let _ = cfg.save();
+    }
+    Ok((m, key))
 }
 
 fn run() -> Result<()> {
@@ -98,14 +112,12 @@ fn run() -> Result<()> {
         }
 
         ["status"] => {
-            let mut m = Monitors::enumerate();
-            let key = m.resolve(monitor.as_deref())?;
+            let (mut m, key) = open_monitor(&mut cfg, monitor.as_deref())?;
             println!("{}: {}", key, cfg.input_label(m.current_input(&key)?));
         }
 
         ["switch", target] => {
-            let mut m = Monitors::enumerate();
-            let key = m.resolve(monitor.as_deref())?;
+            let (mut m, key) = open_monitor(&mut cfg, monitor.as_deref())?;
             let code = match *target {
                 "this" => cfg.this_input.ok_or_else(|| anyhow!("run: config set this <input>"))?,
                 "other" => cfg.other_input.ok_or_else(|| anyhow!("run: config set other <input>"))?,
@@ -114,7 +126,11 @@ fn run() -> Result<()> {
                     cfg.toggle_target(cur)
                         .ok_or_else(|| anyhow!("set both 'this' and 'other' inputs first (config set …)"))?
                 }
-                t => parse_input(t).ok_or_else(|| anyhow!("unknown input '{t}'"))?,
+                t => {
+                    let code = parse_input(t).ok_or_else(|| anyhow!("unknown input '{t}'"))?;
+                    m.inputs(&key)?; // validate a typed-in input against the monitor
+                    code
+                }
             };
             m.set_input(&key, code)?;
             println!("{key} → {}", cfg.input_label(code));
@@ -139,6 +155,11 @@ fn run() -> Result<()> {
             println!("{key}");
             print_kvm(&cfg, &k);
         }
+
+        #[cfg(target_os = "linux")]
+        ["hotkey-daemon"] => montools_lib::hotkey_daemon::run(None)?,
+        #[cfg(target_os = "linux")]
+        ["hotkey-daemon", "--hotkey", h] => montools_lib::hotkey_daemon::run(Some(h))?,
 
         _ => bail!("unrecognized command\n\n{USAGE}"),
     }

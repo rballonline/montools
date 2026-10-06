@@ -49,14 +49,28 @@ sudo udevadm control --reload && sudo udevadm trigger
 ```
 
 - **GNOME** needs the [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) to show tray icons. KDE and most other desktops show them natively.
-- **Wayland** doesn't let apps register global hotkeys. Instead, bind `montools-cli switch toggle` to a shortcut in your desktop's keyboard settings. The Settings window shows this note when it detects Wayland.
+- **Wayland** doesn't let apps register global hotkeys, so on Wayland run the hotkey service below. It uses the hotkey from Settings.
+
+#### Hotkey at the login screen (and on Wayland)
+
+Desktop shortcuts only work while you're logged in. `montools-cli hotkey-daemon` reads the keyboard directly from `/dev/input` instead, so the hotkey also works at the login screen, the lock screen and on a text console, under X11 or Wayland. It uses the hotkey from Settings (or `--hotkey Alt+Shift+KeyZ`) and picks keyboards up again when the KVM moves them back.
+
+Run it as a system service under your user (the unit is in [`src-tauri/linux`](src-tauri/linux/montools-hotkey@.service)):
+
+```sh
+sudo cp src-tauri/linux/montools-hotkey@.service /etc/systemd/system/
+sudo systemctl enable --now montools-hotkey@$USER
+journalctl -u montools-hotkey@$USER -f   # see which keyboards it found
+```
+
+Remove any desktop shortcut bound to `montools-cli switch toggle` (and clear the tray app's hotkey on X11), or one key press will toggle twice. The service can read every key you type, like any keyboard-level hotkey tool, but it only acts on the configured combination.
 
 ## Configuring
 
 On first launch the Settings window opens. Afterwards, open it from the tray menu.
 
 1. **Monitor**: picks the monitor to control. The first monitor with a KVM is chosen automatically.
-2. **Computers**: set the input each computer is plugged into, and optionally a name ("Work laptop"). *This PC* defaults to the input you're currently on.
+2. **Display mapping**: set the input each computer is plugged into, and optionally a name ("Work laptop"). *This PC* defaults to the input you're currently on.
 3. **Switch to**: one button per configured computer.
 4. **USB / KVM mapping**: for each computer, choose the USB upstream port its cable is plugged into, then **Save**. Confirm with **Keep** within 5 seconds, or it reverts. The mapping is stored in the monitor, so it keeps working after montools quits, and from the other computer too.
 5. **Shortcut & startup**: record a global hotkey and choose whether to start at login.
@@ -85,6 +99,7 @@ montools-cli [--monitor <key>] <command>
   config                         Show config path and contents
   config set this|other <input>
   config name this|other <name>  Friendly name for a computer (empty clears it)
+  hotkey-daemon [--hotkey <keys>]  (Linux) Toggle on a hotkey read from /dev/input
 ```
 
 `kvm set` writes immediately, with no confirmation and no revert.

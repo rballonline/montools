@@ -31,8 +31,51 @@ struct Entry {
     display: Display,
     key: String,
     model: String,
-    inputs: Vec<u8>,
+    /// Linux /dev/i2c-N bus number.
+    bus: Option<u32>,
+    /// Supported input codes from the capabilities string; None until first needed.
+    inputs: Option<Vec<u8>>,
     kvm: Option<&'static KvmProfile>,
+}
+
+/// Reads the capabilities string, which takes several seconds over DDC/CI.
+fn read_inputs(display: &mut Display) -> Vec<u8> {
+    let mut inputs: Vec<u8> = display
+        .handle
+        .capabilities()
+        .ok()
+        .and_then(|c| c.vcp_features.get(&VCP_INPUT_SELECT).map(|d| d.values().copied().collect()))
+        .unwrap_or_default();
+    inputs.sort_unstable();
+    inputs
+}
+
+/// ddc-hi identifies I2C displays by the device number of /dev/i2c-N; N is its minor.
+fn i2c_bus(display: &Display) -> Option<u32> {
+    if display.info.backend != ddc_hi::Backend::I2cDevice {
+        return None;
+    }
+    let rdev: u64 = display.info.id.parse().ok()?;
+    Some(((rdev & 0xff) | ((rdev >> 12) & 0xfff00)) as u32)
+}
+
+/// Opens a single /dev/i2c-N bus as a display, if a monitor answers with an EDID there.
+#[cfg(target_os = "linux")]
+fn open_i2c_bus(bus: u32) -> Option<Display> {
+    use ddc::Edid;
+    use std::os::unix::fs::MetadataExt;
+    let mut ddc = ddc_i2c::from_i2c_device(format!("/dev/i2c-{bus}")).ok()?;
+    let rdev = ddc.inner_ref().inner_ref().metadata().ok()?.rdev();
+    let mut edid = vec![0u8; 0x100];
+    ddc.read_edid(0, &mut edid).ok()?;
+    let info = ddc_hi::DisplayInfo::from_edid(ddc_hi::Backend::I2cDevice, rdev.to_string(), edid).ok()?;
+    Some(Display::new(ddc_hi::Handle::I2cDevice(ddc), info))
+}
+
+impl Entry {
+    fn inputs(&mut self) -> &[u8] {
+        self.inputs.get_or_insert_with(|| read_inputs(&mut self.display))
+    }
 }
 
 pub struct Monitors {
@@ -48,28 +91,51 @@ fn normalize_model(name: &str) -> String {
 }
 
 impl Monitors {
-    /// Enumerates monitors and reads their capabilities. Slow (~1s per monitor).
+    /// Enumerates monitors. The capabilities string (supported inputs) is read lazily,
+    /// except where the model name has to come from it (Windows has no EDID name).
     pub fn enumerate() -> Self {
+        Self::from_displays(Display::enumerate())
+    }
+
+    /// Opens the monitor `key`, trying the bus it was last seen on (`bus_hint`) before
+    /// scanning every bus. Use `bus()` afterwards to learn where it actually was.
+    pub fn open(key: Option<&str>, bus_hint: Option<u32>) -> Self {
+        #[cfg(target_os = "linux")]
+        if let (Some(key), Some(bus)) = (key, bus_hint) {
+            if let Some(display) = open_i2c_bus(bus) {
+                let m = Self::from_displays(vec![display]);
+                if m.entries.iter().any(|e| e.key == key) {
+                    return m;
+                }
+            }
+        }
+        let _ = bus_hint;
+        Self::enumerate()
+    }
+
+    fn from_displays(displays: Vec<Display>) -> Self {
         let mut entries: Vec<Entry> = Vec::new();
-        for mut display in Display::enumerate() {
-            let caps = display.handle.capabilities().ok();
-            let model = display
-                .info
-                .model_name
-                .clone()
-                .or_else(|| caps.as_ref().and_then(|c| c.model.clone()))
-                .map(|m| normalize_model(&m))
-                .unwrap_or_else(|| display.info.id.clone());
-            let mut inputs: Vec<u8> = caps
-                .as_ref()
-                .and_then(|c| c.vcp_features.get(&VCP_INPUT_SELECT))
-                .map(|d| d.values().copied().collect())
-                .unwrap_or_default();
-            inputs.sort_unstable();
+        for mut display in displays {
+            let mut inputs = None;
+            let mut model = display.info.model_name.clone();
+            if model.is_none() {
+                if let Ok(caps) = display.handle.capabilities() {
+                    model = caps.model.clone();
+                    let mut v: Vec<u8> = caps
+                        .vcp_features
+                        .get(&VCP_INPUT_SELECT)
+                        .map(|d| d.values().copied().collect())
+                        .unwrap_or_default();
+                    v.sort_unstable();
+                    inputs = Some(v);
+                }
+            }
+            let model = model.map(|m| normalize_model(&m)).unwrap_or_else(|| display.info.id.clone());
 
             let dupes = entries.iter().filter(|e| e.model == model).count();
             let key = if dupes == 0 { model.clone() } else { format!("{model}#{}", dupes + 1) };
             entries.push(Entry {
+                bus: i2c_bus(&display),
                 display,
                 kvm: profile_for(&model),
                 key,
@@ -78,6 +144,11 @@ impl Monitors {
             });
         }
         Monitors { entries }
+    }
+
+    /// The Linux I2C bus number of monitor `key`, if known.
+    pub fn bus(&self, key: &str) -> Option<u32> {
+        self.entries.iter().find(|e| e.key == key).and_then(|e| e.bus)
     }
 
     pub fn keys(&self) -> Vec<String> {
@@ -109,6 +180,7 @@ impl Monitors {
 
     pub fn status(&mut self, key: &str) -> Result<MonitorStatus> {
         let e = self.entry(key)?;
+        let inputs = e.inputs().iter().map(|&code| InputOption { code, name: input_name(code) }).collect();
         let current_input = e
             .display
             .handle
@@ -122,7 +194,7 @@ impl Monitors {
         Ok(MonitorStatus {
             key: e.key.clone(),
             model: e.model.clone(),
-            inputs: e.inputs.iter().map(|&code| InputOption { code, name: input_name(code) }).collect(),
+            inputs,
             current_input,
             kvm,
         })
@@ -143,15 +215,24 @@ impl Monitors {
         Ok((v.value() & 0xFF) as u8)
     }
 
+    /// Supported input codes (empty if the monitor doesn't report them). Slow on first call.
+    pub fn inputs(&mut self, key: &str) -> Result<Vec<u8>> {
+        Ok(self.entry(key)?.inputs().to_vec())
+    }
+
+    /// Switches input. Validates against the supported inputs only if they've already been
+    /// read, so a switch to a known-good input doesn't pay for the capabilities string.
     pub fn set_input(&mut self, key: &str, input: u8) -> Result<()> {
         let e = self.entry(key)?;
-        if !e.inputs.is_empty() && !e.inputs.contains(&input) {
-            bail!(
-                "{} is not an input on {} (has: {})",
-                input_name(input),
-                e.model,
-                e.inputs.iter().map(|&i| input_name(i)).collect::<Vec<_>>().join(", ")
-            );
+        if let Some(inputs) = &e.inputs {
+            if !inputs.is_empty() && !inputs.contains(&input) {
+                bail!(
+                    "{} is not an input on {} (has: {})",
+                    input_name(input),
+                    e.model,
+                    inputs.iter().map(|&i| input_name(i)).collect::<Vec<_>>().join(", ")
+                );
+            }
         }
         e.display
             .handle

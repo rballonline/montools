@@ -1,4 +1,6 @@
 pub mod config;
+#[cfg(target_os = "linux")]
+pub mod hotkey_daemon;
 pub mod inputs;
 pub mod kvm;
 pub mod monitors;
@@ -9,7 +11,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -296,20 +298,6 @@ async fn revert_kvm(app: AppHandle, token: u64) -> Result<Option<KvmState>, Stri
     revert_pending(&app, token)
 }
 
-#[derive(serde::Serialize)]
-struct PlatformInfo {
-    os: &'static str,
-    wayland: bool,
-}
-
-#[tauri::command]
-fn platform_info() -> PlatformInfo {
-    let wayland = cfg!(target_os = "linux")
-        && (std::env::var_os("WAYLAND_DISPLAY").is_some()
-            || std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v.eq_ignore_ascii_case("wayland")));
-    PlatformInfo { os: std::env::consts::OS, wayland }
-}
-
 #[tauri::command]
 async fn get_autostart(app: AppHandle) -> Result<bool, String> {
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
@@ -350,8 +338,16 @@ pub fn run() {
                 .icon(app.default_window_icon().cloned().expect("app icon"))
                 .tooltip("montools")
                 .menu(&build_tray_menu(&handle, &cfg, None)?)
-                .show_menu_on_left_click(true)
+                // Left click opens Settings; right click shows the menu.
+                .show_menu_on_left_click(false)
                 .on_menu_event(on_menu_event)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } =
+                        event
+                    {
+                        show_settings(tray.app_handle());
+                    }
+                })
                 .build(app)?;
 
             if let Err(e) = apply_hotkey(&handle, cfg.hotkey.as_deref()) {
@@ -381,7 +377,6 @@ pub fn run() {
             apply_kvm_ports,
             confirm_kvm,
             revert_kvm,
-            platform_info,
             get_autostart,
             set_autostart,
         ])

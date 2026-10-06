@@ -31,6 +31,14 @@ tauri-plugin-single-instance = "2.5.2"
 dirs = "7.0.0"
 anyhow = "1.0.104"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Tauri's tray uses tray-icon; its KSNI backend (instead of libappindicator) reports left
+# clicks, so clicking the icon can open Settings rather than always showing the menu.
+tray-icon = { version = "0.25.1", default-features = false, features = ["ksni"] }
+# Same version ddc-hi uses; lets us open a single known bus instead of scanning them all.
+ddc-i2c = { version = "0.2.2", features = ["with-linux", "with-linux-enumerate"] }
+ddc = "0.2.2"
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

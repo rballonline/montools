@@ -15,6 +15,7 @@ interface Config {
   otherName: string | null;
   hotkey: string | null;
   showAllMonitors: boolean;
+  i2cBus?: number | null;
 }
 
 const monitors = ref<MonitorStatus[]>([]);
@@ -142,26 +143,56 @@ listen<KvmState>("kvm-reverted", (e) => {
 onUnmounted(() => {
   unlistenRevert?.();
   clearInterval(countdown);
+  stopCapture();
 });
 
-const platform = ref<{ os: string; wayland: boolean }>({ os: "", wayland: false });
+// Listen on the window while recording: the button that replaces "Set hotkey" never
+// gets focus (autofocus only applies on page load), so its own keydown wouldn't fire.
+function startCapture() {
+  capturing.value = true;
+  superHeld = false;
+  window.addEventListener("keydown", captureHotkey, true);
+  window.addEventListener("keyup", trackSuper, true);
+}
+
+function stopCapture() {
+  capturing.value = false;
+  window.removeEventListener("keydown", captureHotkey, true);
+  window.removeEventListener("keyup", trackSuper, true);
+}
+
+// WebKitGTK on Wayland doesn't always set metaKey for the Super/Windows key, so also
+// track the key itself and ask getModifierState under every name it might use.
+const SUPER_KEYS = ["Meta", "OS", "Super", "Hyper"];
+let superHeld = false;
+function isSuperKey(e: KeyboardEvent) {
+  return SUPER_KEYS.includes(e.key) || /^(Meta|OS|Super)(Left|Right)$/.test(e.code);
+}
+function trackSuper(e: KeyboardEvent) {
+  if (isSuperKey(e)) superHeld = false;
+}
+function superDown(e: KeyboardEvent) {
+  return superHeld || e.metaKey || SUPER_KEYS.some((k) => e.getModifierState(k));
+}
 
 function captureHotkey(e: KeyboardEvent) {
   e.preventDefault();
-  if (e.key === "Escape") return void (capturing.value = false);
-  if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
+  e.stopPropagation();
+  if (e.key === "Escape") return stopCapture();
+  if (isSuperKey(e)) return void (superHeld = true);
+  if (["Control", "Alt", "Shift"].includes(e.key)) return;
   const parts = [];
   if (e.ctrlKey) parts.push("Control");
   if (e.altKey) parts.push("Alt");
   if (e.shiftKey) parts.push("Shift");
-  if (e.metaKey) parts.push("Super");
+  if (superDown(e)) parts.push("Super");
   if (parts.length === 0 && !/^F\d+$/.test(e.code)) {
     error.value = "Use at least one modifier (Ctrl / Alt / Shift / Win) unless it's a function key.";
     return;
   }
   parts.push(e.code);
   config.value.hotkey = parts.join("+");
-  capturing.value = false;
+  stopCapture();
   save();
 }
 
@@ -179,14 +210,12 @@ watch(() => [config.value.monitor, config.value.thisInput, config.value.otherInp
 });
 
 onMounted(async () => {
-  const [cfg, auto, plat] = await Promise.all([
+  const [cfg, auto] = await Promise.all([
     invoke<Config>("get_config"),
     invoke<boolean>("get_autostart").catch(() => false),
-    invoke<{ os: string; wayland: boolean }>("platform_info"),
   ]);
   config.value = cfg;
   autostart.value = auto;
-  platform.value = plat;
   await loadMonitors();
   // First run: assume the monitor's current input is this computer.
   if (config.value.thisInput == null && monitor.value?.current_input != null) {
@@ -252,7 +281,7 @@ onMounted(async () => {
       </section>
 
       <section v-if="monitor">
-        <h2>Computers</h2>
+        <h2>Display mapping</h2>
         <div class="grid">
           <label>This PC
             <input v-model="config.thisName" placeholder="Name, e.g. Desktop" maxlength="32" @change="save" />
@@ -312,18 +341,14 @@ onMounted(async () => {
         <h2>Shortcut &amp; startup</h2>
         <div class="row">
           <span>Toggle hotkey</span>
-          <button v-if="capturing" class="capture" autofocus @keydown="captureHotkey" @blur="capturing = false">
+          <button v-if="capturing" class="capture" @click="stopCapture">
             Press keys… (Esc cancels)
           </button>
-          <button v-else class="ghost" @click="capturing = true">
+          <button v-else class="ghost" @click="startCapture">
             {{ config.hotkey ? config.hotkey.replace(/Key|Digit/g, "") : "Set hotkey" }}
           </button>
           <button v-if="config.hotkey && !capturing" class="ghost" @click="clearHotkey">✕</button>
         </div>
-        <p v-if="platform.wayland" class="muted small">
-          Wayland doesn't let apps register global hotkeys, so this may not fire. Instead, add a custom
-          shortcut in your desktop's keyboard settings that runs <code>montools-cli switch toggle</code>.
-        </p>
         <label class="row check">
           <input type="checkbox" v-model="autostart" @change="toggleAutostart" />
           Start montools when I log in
@@ -341,6 +366,7 @@ onMounted(async () => {
   --accent: #2f6fed; --accent-fg: #fff; --err: #b42318; --err-bg: #fdecea; --ok: #1a7f37; --ok-bg: #e6f4ea;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 14px;
   color: var(--fg); background: var(--bg);
+  color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -359,7 +385,16 @@ section { background: var(--card); border: 1px solid var(--line); border-radius:
 .small { font-size: 12px; margin-bottom: 0; }
 select, button, input { font: inherit; color: inherit; }
 input:not([type]) { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
-select { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; width: 100%; }
+/* Own the whole select look: WebKitGTK otherwise mixes GTK theme colors with ours. */
+select {
+  appearance: none; -webkit-appearance: none; color: var(--fg); background-color: var(--card);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 28px 6px 8px; width: 100%;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%;
+  background-size: 5px 5px; background-repeat: no-repeat;
+}
+select:disabled { opacity: .7; cursor: default; }
+option { color: var(--fg); background-color: var(--card); }
 button { border-radius: 6px; padding: 6px 12px; border: 1px solid var(--line); background: var(--card); cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
 button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }

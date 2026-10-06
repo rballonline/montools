@@ -24,6 +24,9 @@ pub struct Config {
     pub hotkey: Option<String>,
     /// List monitors without a known KVM profile too.
     pub show_all_monitors: bool,
+    /// Linux: the /dev/i2c-N bus the monitor was last found on. Tried first so a switch
+    /// can skip scanning every bus; refreshed automatically when it's wrong.
+    pub i2c_bus: Option<u32>,
 }
 
 pub fn path() -> PathBuf {

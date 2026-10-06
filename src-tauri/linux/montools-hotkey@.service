@@ -1,0 +1,16 @@
+# Hotkey that works at the login and lock screens. Runs as the given user so it
+# reads their montools config. Install:
+#   sudo cp montools-hotkey@.service /etc/systemd/system/
+#   sudo systemctl enable --now montools-hotkey@$USER
+[Unit]
+Description=montools hotkey for %i (works at the login screen)
+
+[Service]
+User=%i
+SupplementaryGroups=input i2c
+ExecStart=/usr/bin/montools-cli hotkey-daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
